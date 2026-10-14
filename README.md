@@ -22,7 +22,7 @@ Redis - and applies the database migrations automatically.
 | URL | What it is |
 |---|---|
 | http://localhost:8000/docs | Interactive API documentation (Swagger) |
-| http://localhost:8000/ui | Minimal chat interface |
+| http://localhost:8000/ui | Web interface: chat, documents, monitoring |
 | http://localhost:8000/health | Dependency health check |
 
 Every `/api/v1` request needs an API key header: `X-API-Key: dev-key-change-me`
@@ -96,6 +96,49 @@ found, which cannot happen if each list is truncated to the handful that will
 be shown: at depth 6 the two lists were entirely disjoint, so fusion degenerated
 into concatenation and the lexical arm contributed nothing.
 
+**Embeddings record which model made them.** Vectors from different models
+occupy unrelated spaces, but a stored vector carries no evidence of its origin:
+change `OPENAI_EMBEDDING_MODEL` and cosine distance keeps returning confident,
+meaningless scores. Each chunk stores `embedding_model`; retrieval searches only
+vectors it can interpret, re-processing treats a mismatched vector as work to
+redo rather than a finished chunk, and `/health` reports the stale count as
+`degraded` - usable, but answering from less of the corpus than it should.
+Degraded deliberately does not fail the check, because the service still serves.
+
+**Reranking exists but ships disabled.** A cross-encoder style pass - score each
+candidate against the question with an LLM - is the conventional next lever
+after hybrid retrieval. Over five runs of the labelled set it reliably lifts
+recall@3 from 64 to 82 percent and usually improves MRR from 0.60 to 0.64, but
+leaves recall@6 untouched and recall@1 unstable, dipping from 45 to 36 percent
+in two of the five. The cost is certain: roughly $0.001 and 2.2 to 2.6 extra
+seconds per question, against a 4.5 second answer.
+
+So it is implemented, tested and switchable via `RAG_RERANK_ENABLED` rather than
+on by default. A reliable 18 point gain in getting the answer into the top three
+is worth having, but it is two cases out of eleven, the latency cost is half
+again on every question, and the arm is non-deterministic where the retrieval
+arms are not. That is a decision for a corpus and a latency budget, which is
+why it is a setting with a harness behind it rather than a default.
+
+Two things were worth building regardless of that verdict. Structured output
+guarantees the shape of a response, not that the model filled it in: asked to
+score 40 passages it was measured returning 5. Placing the other 35 by an
+opinion it never gave yields a different ranking rather than a weaker one, so
+coverage below `MIN_SCORE_COVERAGE` discards the ranking and keeps retrieval
+order. And a provider failure mid-rerank falls back the same way - a reranker is
+an optimisation, and must not turn a usable answer into an error.
+
+**Every search records which arm answered it.** Fusion is the only point where
+the vector and exact-term signals exist on a comparable scale, so each arm's
+contribution is captured there and written to `retrieval_metrics` - per search,
+alongside how many chunks each arm found alone and how many both agreed on.
+Whether a hybrid is worth its second index is an empirical question that
+changes with the corpus, and it is not one the eval harness can answer about
+production traffic. A lexical share drifting toward zero means the hybrid has
+quietly become single-arm retrieval; `/metrics/retrieval` is where that shows
+up. Early traffic puts it around 0.84 semantic to 0.16 lexical, rising to
+roughly even on questions that name an exact term.
+
 **Fusion weights are equal.** Down-weighting the lexical arm looks reasonable
 given its lower standalone recall, but it breaks fusion arithmetic. A chunk only
 exact-term search found enters at lexical rank 1, and any weight below
@@ -113,6 +156,9 @@ than reasoning over noise.
 itself ("what did I ask?") are answered from the transcript instead of being
 refused by a gate that was never going to match. Counting and listing questions
 retrieve more widely and are required to state that the excerpts are a sample.
+Both the blocking and streaming endpoints route on this. They did not always,
+and since the web UI only uses the streaming one, the routing existed where
+nobody could see it.
 
 ### Where the code lives
 
@@ -172,7 +218,8 @@ itself and was answered from the transcript. A refusal is `documents` with
 | `GET` | `/metrics/documents` | Corpus totals, status/type/category breakdowns, top tags |
 | `GET` | `/metrics/processing` | Per-stage run counts, success rates, avg/p95/max duration |
 | `GET` | `/metrics/ai-usage` | Token consumption and USD cost by operation and model |
-| `GET` | `/health` | Database, Redis, storage and AI provider status (no auth) |
+| `GET` | `/metrics/retrieval` | Vector vs exact-term share of every search |
+| `GET` | `/health` | Database, Redis, storage, AI provider and embedding consistency (no auth) |
 
 ### Errors
 
@@ -210,6 +257,8 @@ Settings are grouped by prefix in `.env`; see `.env.example` for the full list.
 | `RAG_TOP_K` | `6` | Chunks retrieved per question |
 | `RAG_AGGREGATE_TOP_K` | `12` | Chunks retrieved for counting/listing questions |
 | `RAG_CANDIDATE_POOL` | `40` | Candidates fetched per arm before fusion |
+| `RAG_RERANK_ENABLED` | `false` | LLM reranking; measured not to pay for itself here |
+| `RAG_RERANK_CANDIDATES` | `20` | Candidates scored when reranking is on |
 | `RAG_MIN_SIMILARITY` | `0.25` | Vector score below which semantic evidence is rejected |
 | `RAG_MIN_LEXICAL_RANK` | `0.02` | Full-text rank below which exact-term evidence is rejected |
 | `RATE_LIMIT_REQUESTS` | `120` | Per API key, per minute |
@@ -271,7 +320,7 @@ docker compose exec api python -m pytest tests -q --cov=app
 docker compose exec api python -m eval.run_retrieval_eval  # retrieval quality
 ```
 
-397 tests, 88% line coverage, running in about 5 seconds.
+455 tests, 89% line coverage, running in about 5 seconds.
 
 Tests never call the OpenAI API: providers are replaced with doubles that return
 deterministic vectors and canned completions, so the suite is fast, free and
@@ -288,11 +337,18 @@ questions paired by hand with the chunks that answer them, plus control
 questions the corpus cannot answer and must refuse.
 
 ```
-recall@6 semantic   9/11 = 82%
-recall@6 lexical    1/11 =  9%
-recall@6 hybrid    10/11 = 91%
-controls refused   2/2
+arm                 r@1    r@3    r@6    MRR   cost
+semantic            36%    55%    82%   0.52
+lexical              9%     9%     9%   0.09
+hybrid              45%    64%    91%   0.60
+hybrid+rerank       36%    82%    91%   0.61   +$0.0117, +2.13s/query
+controls refused  2/2
 ```
+
+Recall asks whether the answering passage reached the model at all; the rank
+metrics ask where it landed. Both are needed - a reranker that lifts the answer
+from sixth place to first leaves recall@6 untouched while changing the answer
+considerably, so recall alone cannot see what a reranker does.
 
 The runner exits non-zero below `MIN_HYBRID_RECALL`, so it can gate a pipeline.
 Reporting each arm separately is deliberate: a single blended number hides a
@@ -317,9 +373,11 @@ retrievable by either arm and measure nothing.
 cannot be cited precisely. Splitting per page costs a little chunking
 efficiency and buys exact citations.
 
-**A relevance threshold, not just top-k.** Returning the nearest chunks for
-every question makes the model answer from irrelevant text. Thresholding turns
-no-good-match into an honest refusal.
+**A relevance gate, not just top-k.** Returning the nearest chunks for every
+question makes the model answer from irrelevant text. A question is answered
+only if the vector score clears `RAG_MIN_SIMILARITY` or the documents literally
+contain the terms asked about, which turns no-good-match into an honest refusal
+without refusing questions that only one of the two signals can see.
 
 **Follow-up questions are rewritten before retrieval.** "And what about
 contractors?" embeds poorly on its own. A condensing call turns it into a
@@ -402,7 +460,10 @@ app/
   workers/        Celery application and tasks
 alembic/          Database migrations
 eval/             Labelled retrieval set and recall harness
-static/           Minimal chat UI
+static/           Web interface (ES modules, no build step)
+  js/api.js       One method per endpoint
+  js/dom.js       Element construction and formatting
+  js/views/       Chat, Documents, Monitoring
 tests/            Unit and integration tests
 ```
 
@@ -410,6 +471,42 @@ See `AI_USAGE.md` for how AI tooling was used to build this, and `Docs/` for the
 original project plan.
 
 ---
+
+## Web interface
+
+`/ui` covers every endpoint the service exposes, across three tabs.
+
+**Chat** lists past conversations with their title, scope and message count;
+opening one loads its transcript, citations and all. A new chat picks its
+document scope first, because scope is fixed when the session is created and
+offering to change it later would silently not apply. Citations show which
+retrieval arm found each passage - vector, exact term, or both - which is the
+quickest way to see hybrid retrieval doing something rather than take it on
+trust.
+
+**Documents** uploads, filters by name and status, and opens a document to its
+AI insights: summary, key points, tags, entities, and the classification.
+Reprocess and delete live there too. Insights are fetched per document rather
+than with the list, since a summary per row would make browsing fifty
+documents a fifty-summary download.
+
+**Monitoring** is the four metrics endpoints plus health. Headline numbers are
+stat tiles rather than one-bar charts; the many-small-categories breakdowns are
+tables, which read better than a chart past a handful of classes. The two
+genuinely graphical pieces are the vector/exact-term split and uploads over
+time. The two series colors were validated against this app's surface rather
+than chosen by eye - worst-pair CVD Delta E 26.8 against a target of 8 - and
+each segment carries a direct label and a legend, so identity never rests on
+color alone.
+
+It is plain ES modules served by FastAPI: no build step, nothing to install,
+and no framework to upgrade. Every helper builds nodes and sets `textContent`,
+so document text and model output cannot become markup.
+
+Known gap: `MessageResponse` carries no `source`, so a reloaded transcript
+cannot tell a conversation answer from a refusal and renders both in the
+ungrounded style. Live answers get it right - the `done` event does carry
+`source`.
 
 ## Streaming
 
@@ -439,3 +536,9 @@ Citations arrive at the end rather than alongside the text, because which
 sources an answer relies on is only known once the model has finished citing
 them. The web UI uses this endpoint, re-rendering the message with clickable
 citation markers when the `done` event arrives.
+
+`source` on the `done` event distinguishes an answer grounded in documents from
+one answered off the transcript. Transcript answers and refusals arrive as a
+single `token` event rather than progressively: both are short, both are
+already persisted by the shared path, and duplicating that persistence to
+stream them would buy very little.

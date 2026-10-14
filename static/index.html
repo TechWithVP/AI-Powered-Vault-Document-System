@@ -8,50 +8,18 @@
 </head>
 <body>
   <header>
-    <h1>Vault Document System</h1>
+    <h1>Vault</h1>
+    <nav id="nav" class="tabs"></nav>
     <span class="spacer"></span>
-    <span id="scope" class="badge">no documents selected</span>
+    <input id="apiKey" class="key" type="text" placeholder="X-API-Key" autocomplete="off"
+           aria-label="API key" />
     <span id="health" class="badge">checking...</span>
   </header>
 
-  <main>
-    <aside>
-      <h2>API key</h2>
-      <div class="key-row">
-        <input id="apiKey" type="text" placeholder="X-API-Key" autocomplete="off" />
-      </div>
+  <main id="views"></main>
 
-      <h2>Upload</h2>
-      <label class="uploader" id="dropzone">
-        <input id="fileInput" type="file" accept=".pdf,.docx,.txt,.md" />
-        <svg class="uploader-icon" viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M12 16V4m0 0L8 8m4-4 4 4" />
-          <path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" />
-        </svg>
-        <span class="uploader-title">Drop a file or click to choose</span>
-        <span class="uploader-hint">PDF, DOCX, TXT, MD &middot; max 25 MB</span>
-      </label>
-
-      <h2>Documents <span id="docCount"></span></h2>
-      <div id="documents"></div>
-    </aside>
-
-    <section class="chat">
-      <div id="messages">
-        <div class="empty">
-          Upload a document, then ask a question about it.<br />
-          Answers cite the exact page they came from.
-        </div>
-      </div>
-      <footer>
-        <form class="composer" id="composer">
-          <textarea id="question" rows="1" placeholder="Ask a question about your documents..."></textarea>
-          <button id="send" type="submit">Ask</button>
-        </form>
-      </footer>
-    </section>
-  </main>
-
-  <script src="app.js"></script>
+  <!-- Views are built in JavaScript, so markup and rendering live in one place
+       rather than being split between a template and the code that fills it. -->
+  <script type="module" src="js/app.js"></script>
 </body>
 </html>

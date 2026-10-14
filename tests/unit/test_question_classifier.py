@@ -92,3 +92,55 @@ class TestDocumentQuestions:
             classifier.classify("Where is the geographical limit mentioned?", has_history=True)
             is QuestionKind.DOCUMENT
         )
+
+
+class TestAdverbsBetweenAuxiliaryAndVerb:
+    """English drops adverbs mid-phrase: "did I *just* ask".
+
+    The patterns originally matched "what did I ask?" but not "what did I just
+    ask you?", so the same question routed two different ways depending on one
+    filler word.
+    """
+
+    @pytest.mark.parametrize(
+        "question",
+        [
+            "what did I just ask you?",
+            "what did I actually ask you earlier?",
+            "did we already ask that?",
+            "did I previously ask about the excess?",
+            "you just said the excess is 10 percent",
+            "you already told me the waiting period",
+            "I previously asked about geographical limits",
+            "we also asked about day care",
+        ],
+    )
+    def test_an_adverb_does_not_hide_a_conversation_question(
+        self, question: str
+    ) -> None:
+        classifier = QuestionClassifier()
+
+        assert (
+            classifier.classify(question, has_history=True)
+            is QuestionKind.CONVERSATION
+        )
+
+    @pytest.mark.parametrize(
+        "question",
+        [
+            "does the policy ask for a deposit?",
+            "who should I ask about claims?",
+            "what is the excess?",
+            "you must ask the insurer within 30 days",
+        ],
+    )
+    def test_ordinary_questions_are_still_document_questions(
+        self, question: str
+    ) -> None:
+        """The adverb group must not widen the patterns into false positives."""
+        classifier = QuestionClassifier()
+
+        assert (
+            classifier.classify(question, has_history=True)
+            is QuestionKind.DOCUMENT
+        )

@@ -32,12 +32,17 @@ def _pattern(*fragments: str) -> re.Pattern[str]:
 #: Deliberately narrow: "where is X mentioned" is about the document, so only
 #: explicit references to the assistant, the user's own turns, or the numbered
 #: excerpts count.
+#: Adverbs English drops between an auxiliary and its verb - "did I *just* ask".
+#: Leaving them out is how "what did I just ask you?" slipped past a
+#: pattern that matched the very same question without the adverb.
+_ADVERB = r"(?: (?:just|already|previously|earlier|actually|also|really|then))?"
+
 CONVERSATION_PATTERNS = _pattern(
-    r"\byou (said|told|mentioned|wrote|answered|replied|shared|gave)\b",
+    rf"\byou{_ADVERB} (said|told|mentioned|wrote|answered|replied|shared|gave)\b",
     r"\byour (earlier|previous|last|first|above|prior) (answer|response|reply|message)\b",
     r"\b(earlier|previous|last|above|prior) (answer|response|reply|message)\b",
-    r"\b(i|we) (just )?asked\b",
-    r"\bdid (i|we) ask\b",
+    rf"\b(i|we){_ADVERB} asked\b",
+    rf"\bdid (i|we){_ADVERB} ask\b",
     r"\bmy (first|second|third|last|previous|earlier|\d+(st|nd|rd|th)) question\b",
     r"\b(first|second|third|\d+(st|nd|rd|th)) (question|excerpt)\b",
     r"\bthis (conversation|chat|convo|thread|session)\b",

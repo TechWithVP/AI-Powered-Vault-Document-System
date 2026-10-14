@@ -9,14 +9,18 @@ from __future__ import annotations
 import uuid
 
 import pytest
+import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.constants import DocumentCategory, DocumentStatus, Sentiment
+from app.models.chat import ChatSession
 from app.models.chunk import DocumentChunk
 from app.models.document import DocumentInsight
-from app.repositories.chunk import ChunkRepository
+from app.ai.rag.retriever import RetrievalOutcome
+from app.repositories.chunk import ChunkRepository, ScoredChunk
 from app.repositories.document import DocumentFilter, DocumentRepository
-from tests.integration.conftest import make_document
+from app.repositories.metrics import RetrievalMetricRepository
+from tests.integration.conftest import make_chat_session, make_document
 
 pytestmark = pytest.mark.integration
 
@@ -230,3 +234,138 @@ class TestCascades:
         await db.flush()
 
         assert await ChunkRepository(db).count_for_document(document.id) == 0
+
+
+class TestRetrievalMetricRepository:
+    """Per-search arm attribution, recorded and aggregated.
+
+    Scoped to a session per test: the aggregates are deliberately global, so
+    without a scope these would also count rows the running application wrote.
+    """
+
+    @staticmethod
+    def outcome(
+        *, semantic: float, lexical: float, relevant: bool = True
+    ) -> RetrievalOutcome:
+        chunk = DocumentChunk(
+            id=uuid.uuid4(),
+            document_id=uuid.uuid4(),
+            chunk_index=0,
+            content="text",
+            token_count=5,
+        )
+        scored = ScoredChunk(
+            chunk=chunk,
+            similarity=0.5 if semantic else 0.0,
+            lexical_rank=0.4 if lexical else 0.0,
+            rrf_semantic=semantic,
+            rrf_lexical=lexical,
+        )
+        return RetrievalOutcome(
+            results=[scored],
+            best_similarity=0.5 if relevant else 0.01,
+            threshold=0.25,
+            best_lexical_rank=0.4 if lexical else 0.0,
+            lexical_threshold=0.02,
+            lexical_eligible=bool(lexical),
+        )
+
+    @pytest_asyncio.fixture
+    async def chat_session(self, db: AsyncSession, user_id: str) -> ChatSession:
+        session = make_chat_session(user_id)
+        db.add(session)
+        await db.flush()
+        return session
+
+    async def test_a_search_is_recorded_with_its_split(
+        self, db: AsyncSession, chat_session: ChatSession
+    ) -> None:
+        repository = RetrievalMetricRepository(db)
+
+        repository.record(
+            self.outcome(semantic=0.75, lexical=0.25),
+            question_kind="document",
+            session_id=chat_session.id,
+            latency_ms=120,
+        )
+        await repository.flush()
+
+        summary = await repository.arm_summary(chat_session.id)
+        assert summary["searches"] == 1
+        assert summary["semantic_share"] == pytest.approx(0.75)
+        assert summary["lexical_share"] == pytest.approx(0.25)
+        assert summary["chunks_from_both"] == 1
+
+    async def test_the_summary_averages_searches_not_chunks(
+        self, db: AsyncSession, chat_session: ChatSession
+    ) -> None:
+        """Each search counts once however many chunks it returned."""
+        repository = RetrievalMetricRepository(db)
+
+        repository.record(
+            self.outcome(semantic=1.0, lexical=0.0),
+            question_kind="document",
+            session_id=chat_session.id,
+        )
+        repository.record(
+            self.outcome(semantic=0.0, lexical=1.0),
+            question_kind="document",
+            session_id=chat_session.id,
+        )
+        await repository.flush()
+
+        summary = await repository.arm_summary(chat_session.id)
+        assert summary["semantic_share"] == pytest.approx(0.5)
+        assert summary["chunks_from_semantic_only"] == 1
+        assert summary["chunks_from_lexical_only"] == 1
+
+    async def test_kinds_are_reported_separately(
+        self, db: AsyncSession, chat_session: ChatSession
+    ) -> None:
+        """Counting questions retrieve wider, so their shares are not
+        comparable with ordinary ones."""
+        repository = RetrievalMetricRepository(db)
+
+        repository.record(
+            self.outcome(semantic=1.0, lexical=0.0),
+            question_kind="document",
+            session_id=chat_session.id,
+        )
+        repository.record(
+            self.outcome(semantic=0.5, lexical=0.5),
+            question_kind="aggregate",
+            session_id=chat_session.id,
+        )
+        await repository.flush()
+
+        rows = {
+            row["question_kind"]: row
+            for row in await repository.by_question_kind(chat_session.id)
+        }
+        assert rows["document"]["semantic_share"] == pytest.approx(1.0)
+        assert rows["aggregate"]["semantic_share"] == pytest.approx(0.5)
+
+    async def test_refusals_are_recorded_too(
+        self, db: AsyncSession, chat_session: ChatSession
+    ) -> None:
+        """A search that found nothing is still a search worth counting."""
+        repository = RetrievalMetricRepository(db)
+
+        repository.record(
+            self.outcome(semantic=0.2, lexical=0.0, relevant=False),
+            question_kind="document",
+            session_id=chat_session.id,
+        )
+        await repository.flush()
+
+        rows = await repository.by_question_kind(chat_session.id)
+        assert rows[0]["searches"] == 1
+        assert rows[0]["relevant_rate"] == pytest.approx(0.0)
+
+    async def test_a_scope_with_no_searches_reports_zeroes(
+        self, db: AsyncSession, chat_session: ChatSession
+    ) -> None:
+        summary = await RetrievalMetricRepository(db).arm_summary(chat_session.id)
+
+        assert summary["searches"] == 0
+        assert summary["semantic_share"] == 0.0

@@ -236,6 +236,13 @@ class RagSettings(_Section):
     #: overlap; truncating each to top_k leaves nothing to fuse and silently
     #: degrades the hybrid into semantic search with a lexical tail.
     candidate_pool: int = Field(default=40, ge=1)
+    #: Reranking costs an extra LLM call per question, so it is opt-in and the
+    #: eval harness is the place to decide whether it pays for itself on a
+    #: given corpus.
+    rerank_enabled: bool = False
+    #: How many fused candidates are scored. Beyond the pool size this has no
+    #: effect; below top_k it would discard results before they are ranked.
+    rerank_candidates: int = Field(default=20, ge=2)
     history_turns: int = 6
     max_context_chars: int = 24_000
     suggestion_count: int = 3

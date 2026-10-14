@@ -149,7 +149,9 @@ class EmbedStage(PipelineStage):
         self._settings = settings
 
     def execute(self, context: PipelineContext) -> StageOutcome:
-        pending = self._chunks.pending_embeddings(context.document.id)
+        pending = self._chunks.pending_embeddings(
+            context.document.id, model=self._embedder.model
+        )
         if not pending:
             return StageOutcome(items_processed=0)
 
@@ -168,6 +170,10 @@ class EmbedStage(PipelineStage):
 
             for row, vector in zip(batch, result.vectors, strict=True):
                 row.embedding = vector
+                # Stamped from the result, not from config: if the provider
+                # served a different model than requested, the stamp must
+                # describe the vector that actually arrived.
+                row.embedding_model = result.model
 
             context.usage = context.usage + result.usage
             self._usage.record(

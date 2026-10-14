@@ -9,6 +9,7 @@ from app.schemas.metrics import (
     AiUsageResponse,
     DocumentStatisticsResponse,
     ProcessingStatisticsResponse,
+    RetrievalMetricsResponse,
 )
 
 router = APIRouter(prefix="/metrics", tags=["Metrics"])
@@ -66,3 +67,24 @@ async def ai_usage(
     service: MetricsServiceDep,
 ) -> AiUsageResponse:
     return AiUsageResponse.from_domain(await service.ai_usage_statistics())
+
+
+@router.get(
+    "/retrieval",
+    response_model=RetrievalMetricsResponse,
+    summary="Retrieval arm attribution",
+    description=(
+        "How much of each search came from vector similarity versus "
+        "exact-term matching. Recorded per search at fusion, which is the "
+        "only point where the two signals share a scale. A lexical share "
+        "that drifts to zero means the hybrid has quietly become "
+        "single-arm retrieval."
+    ),
+)
+async def retrieval_metrics(
+    principal: CurrentPrincipal,
+    service: MetricsServiceDep,
+) -> RetrievalMetricsResponse:
+    return RetrievalMetricsResponse.from_domain(
+        await service.retrieval_statistics()
+    )

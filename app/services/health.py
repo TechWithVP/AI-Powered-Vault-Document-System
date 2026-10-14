@@ -17,6 +17,7 @@ from app.core.config import Settings
 from app.core.logging import get_logger
 from app.core.redis import get_async_redis
 from app.db.session import db_manager
+from app.repositories.chunk import ChunkRepository
 from app.storage import get_storage_backend
 
 logger = get_logger(__name__)
@@ -26,6 +27,9 @@ class ComponentStatus(StrEnum):
     UP = "up"
     DOWN = "down"
     NOT_CONFIGURED = "not_configured"
+    #: Usable, but not in the state it should be. Distinct from DOWN because
+    #: it must not fail a load-balancer check - the system still serves.
+    DEGRADED = "degraded"
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,12 +131,50 @@ class LLMConfigProbe(HealthProbe):
         return report
 
 
+class EmbeddingConsistencyProbe(HealthProbe):
+    """Reports vectors that no longer match the configured embedding model.
+
+    Retrieval skips them, so nothing breaks loudly - the corpus just quietly
+    shrinks. Without this the only symptom is a system that has become worse
+    at answering, which is close to undiagnosable after the fact.
+    """
+
+    name = "embeddings"
+
+    def __init__(self, settings: Settings) -> None:
+        self._model = settings.openai.embedding_model
+
+    async def run(self) -> None:
+        async with db_manager.session() as session:
+            stale = await ChunkRepository(session).count_stale(self._model)
+        if stale:
+            raise RuntimeError(
+                f"{stale} chunk(s) were embedded by a different model and are "
+                f"excluded from retrieval; re-process them to restore the "
+                f"corpus for {self._model}"
+            )
+
+    async def execute(self) -> ComponentHealth:
+        report = await super().execute()
+        if report.status is ComponentStatus.DOWN:
+            # Stale vectors degrade answer quality; they do not stop the
+            # service, so this must not read as an outage.
+            return ComponentHealth(
+                name=report.name,
+                status=ComponentStatus.DEGRADED,
+                latency_ms=report.latency_ms,
+                detail=report.detail,
+            )
+        return report
+
+
 class HealthService:
     """Runs every probe concurrently and aggregates the result."""
 
     def __init__(self, settings: Settings, probes: list[HealthProbe] | None = None):
         self._probes = probes or [
             DatabaseProbe(),
+            EmbeddingConsistencyProbe(settings),
             RedisProbe(),
             StorageProbe(),
             LLMConfigProbe(settings),

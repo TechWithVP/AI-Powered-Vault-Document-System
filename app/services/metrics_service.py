@@ -16,7 +16,11 @@ from app.core.constants import DocumentStatus, ProcessingStage
 from app.core.logging import get_logger
 from app.core.security import Principal
 from app.repositories.document import DocumentStatsRepository
-from app.repositories.metrics import ApiUsageRepository, ProcessingMetricRepository
+from app.repositories.metrics import (
+    ApiUsageRepository,
+    ProcessingMetricRepository,
+    RetrievalMetricRepository,
+)
 
 logger = get_logger(__name__)
 
@@ -76,11 +80,25 @@ class AiUsageStatistics:
     by_operation: list[dict[str, Any]]
 
 
+@dataclass(frozen=True, slots=True)
+class RetrievalStatistics:
+    """Which retrieval arm the corpus is actually being answered from.
+
+    A lexical share near zero means the exact-term arm is paying for itself
+    only in the rare cases embeddings miss - worth knowing before tuning it,
+    and worth knowing if it ever silently stops contributing at all.
+    """
+
+    summary: dict[str, Any]
+    by_question_kind: list[dict[str, Any]]
+
+
 class MetricsService:
     """Aggregates monitoring data for the metrics API."""
 
     def __init__(self, session: AsyncSession) -> None:
         self._documents = DocumentStatsRepository(session)
+        self._retrieval = RetrievalMetricRepository(session)
         self._processing = ProcessingMetricRepository(session)
         self._usage = ApiUsageRepository(session)
 
@@ -125,4 +143,11 @@ class MetricsService:
         return AiUsageStatistics(
             total=await self._usage.grand_total(),
             by_operation=await self._usage.totals_by_operation(),
+        )
+
+    async def retrieval_statistics(self) -> RetrievalStatistics:
+        """How much of retrieval each arm is actually carrying."""
+        return RetrievalStatistics(
+            summary=await self._retrieval.arm_summary(),
+            by_question_kind=await self._retrieval.by_question_kind(),
         )

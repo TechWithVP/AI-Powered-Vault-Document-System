@@ -10,6 +10,7 @@ from app.services.metrics_service import (
     AiUsageStatistics,
     DocumentStatistics,
     ProcessingStatistics,
+    RetrievalStatistics,
 )
 
 
@@ -124,4 +125,52 @@ class AiUsageResponse(BaseModel):
         return cls(
             total=UsageTotals(**stats.total),
             by_operation=[OperationUsage(**row) for row in stats.by_operation],
+        )
+
+
+class RetrievalArmSummary(BaseModel):
+    """Corpus-wide split between the vector and exact-term arms."""
+
+    searches: int = Field(description="Searches recorded.")
+    semantic_share: float = Field(
+        description="Mean fraction of fused score contributed by vector search."
+    )
+    lexical_share: float = Field(
+        description="Mean fraction contributed by exact-term search."
+    )
+    chunks_from_semantic_only: int
+    chunks_from_lexical_only: int = Field(
+        description="Chunks only exact-term search found. Zero means the "
+        "lexical arm is confirming results rather than adding any."
+    )
+    chunks_from_both: int
+    avg_best_similarity: float
+    avg_best_lexical_rank: float
+
+
+class RetrievalKindSummary(BaseModel):
+    """The same split for one class of question."""
+
+    question_kind: str
+    searches: int
+    semantic_share: float
+    lexical_share: float
+    relevant_rate: float = Field(
+        description="Share of these questions that cleared the relevance gate."
+    )
+
+
+class RetrievalMetricsResponse(BaseModel):
+    """Which retrieval arm answers are actually coming from."""
+
+    summary: RetrievalArmSummary
+    by_question_kind: list[RetrievalKindSummary]
+
+    @classmethod
+    def from_domain(cls, stats: RetrievalStatistics) -> "RetrievalMetricsResponse":
+        return cls(
+            summary=RetrievalArmSummary(**stats.summary),
+            by_question_kind=[
+                RetrievalKindSummary(**row) for row in stats.by_question_kind
+            ],
         )

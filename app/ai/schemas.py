@@ -138,3 +138,41 @@ FOLLOW_UP_SCHEMA: dict[str, Any] = {
         }
     },
 }
+
+
+#: Scores are a small integer scale rather than a float: the model is being
+#: asked to rank, not to calibrate, and a coarse scale produces more stable
+#: orderings than asking for two decimal places of confidence.
+MIN_RERANK_SCORE = 0
+MAX_RERANK_SCORE = 10
+
+RERANK_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["scores"],
+    "properties": {
+        "scores": {
+            "type": "array",
+            "description": "One entry per passage, in any order.",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["position", "score"],
+                "properties": {
+                    "position": {
+                        "type": "integer",
+                        "description": "The passage number as labelled in the prompt.",
+                    },
+                    "score": {
+                        "type": "integer",
+                        "description": (
+                            f"{MIN_RERANK_SCORE} if the passage cannot help answer "
+                            f"the question, {MAX_RERANK_SCORE} if it answers it "
+                            "directly."
+                        ),
+                    },
+                },
+            },
+        }
+    },
+}

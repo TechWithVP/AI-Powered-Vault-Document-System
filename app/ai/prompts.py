@@ -290,3 +290,43 @@ def build_conversation_messages(
         f"Transcript of the conversation so far:\n\n{transcript}\n\n"
         f"Question about this conversation: {question}"
     )
+
+
+# --------------------------------------------------------------------------- #
+# Reranking
+# --------------------------------------------------------------------------- #
+# Retrieval ranks by vector distance and stem overlap, neither of which reads
+# the question. This pass does. The instruction to score a passage that merely
+# shares the question's topic as low is the whole point: topical overlap is
+# exactly what the retrieval scores already reward, so a reranker that repeats
+# it adds cost and no ordering.
+PASSAGE_RELEVANCE = Prompt(
+    name="passage_relevance",
+    system=(
+        "You rank passages by how well each one answers a specific question.\n\n"
+        "Score every passage from 0 to 10:\n"
+        "- 10: contains the answer, stated directly.\n"
+        "- 7-9: contains most of the answer, or one necessary part of it.\n"
+        "- 4-6: related and useful background, but does not answer the question.\n"
+        "- 1-3: same topic, nothing that bears on the question.\n"
+        "- 0: unrelated, or boilerplate such as headers and addresses.\n\n"
+        "Judge only whether the passage answers THIS question. A passage that "
+        "discusses the same subject without addressing the question is a low "
+        "score, not a middling one. Score each passage independently; there is "
+        "no quota of high or low scores. Return one entry per passage, using "
+        "the number it was labelled with."
+    )
+)
+
+
+def build_rerank_messages(
+    question: str, passages: Sequence[str]
+) -> list[ChatMessage]:
+    """Messages that score each candidate passage against the question."""
+    numbered = "\n\n".join(
+        f"[{position}] {passage}"
+        for position, passage in enumerate(passages, start=1)
+    )
+    return PASSAGE_RELEVANCE.build(
+        f"Question: {question}\n\nPassages:\n\n{numbered}"
+    )

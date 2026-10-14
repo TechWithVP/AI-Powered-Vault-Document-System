@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.constants import DocumentStatus, FileType
 from app.db.session import db_manager
+from app.models.chat import ChatSession
 from app.models.document import Document
 
 
@@ -61,3 +62,8 @@ def make_document(
         page_count=3,
         chunk_count=2,
     )
+
+
+def make_chat_session(user_id: str, *, title: str | None = None) -> ChatSession:
+    """A persisted conversation, for rows that hang off a session."""
+    return ChatSession(id=uuid.uuid4(), user_id=user_id, title=title)

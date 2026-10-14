@@ -12,6 +12,7 @@ import pytest
 
 from app.ai.base import ChatMessage as ProviderMessage
 from app.ai.base import CompletionResult, LLMProvider, StructuredResult, TokenUsage
+from app.ai.question import QuestionKind
 from app.ai.rag.retriever import RetrievalOutcome
 from app.core.config import Settings
 from app.core.constants import MessageRole
@@ -117,6 +118,8 @@ def service() -> ChatService:
     chat._messages.recent_turns = AsyncMock(return_value=[])
     chat._messages.flush = AsyncMock()
     chat._messages.add = MagicMock(side_effect=lambda message: message)
+    chat._retrieval_metrics = MagicMock()
+    chat._retrieval_metrics.record = MagicMock()
     return chat
 
 
@@ -432,3 +435,48 @@ class TestAggregateQuestions:
 
         prompts = [call[0].content for call in service._llm.completions]
         assert not any("may be incomplete" in prompt for prompt in prompts)
+
+
+class TestRetrievalAttribution:
+    """Every search records which arm it leaned on."""
+
+    async def test_an_answered_question_records_its_split(
+        self, service: ChatService, principal
+    ) -> None:
+        outcome = RetrievalOutcome(
+            [scored().with_fusion(semantic=0.75, lexical=0.25)], 0.7, 0.25
+        )
+        service._retriever.retrieve = AsyncMock(return_value=outcome)
+
+        await service.ask(SESSION_ID, principal, "What is the limit?")
+
+        service._retrieval_metrics.record.assert_called_once()
+        call = service._retrieval_metrics.record.call_args
+        assert call.args[0] is outcome
+        assert call.kwargs["question_kind"] == QuestionKind.DOCUMENT.value
+        assert call.kwargs["session_id"] == SESSION_ID
+
+    async def test_a_refusal_records_its_split_too(
+        self, service: ChatService, principal
+    ) -> None:
+        """A search that found nothing is still a search worth counting."""
+        service._retriever.retrieve = AsyncMock(
+            return_value=RetrievalOutcome([], 0.0, 0.25)
+        )
+
+        await service.ask(SESSION_ID, principal, "Who won the world cup?")
+
+        service._retrieval_metrics.record.assert_called_once()
+        assert service._retrieval_metrics.record.call_args.args[0].is_relevant is False
+
+    async def test_the_kind_recorded_is_the_classified_one(
+        self, service: ChatService, principal
+    ) -> None:
+        service._retriever.retrieve = AsyncMock(
+            return_value=RetrievalOutcome([scored()], 0.7, 0.25)
+        )
+
+        await service.ask(SESSION_ID, principal, "How many exclusions are there?")
+
+        kind = service._retrieval_metrics.record.call_args.kwargs["question_kind"]
+        assert kind == QuestionKind.AGGREGATE.value

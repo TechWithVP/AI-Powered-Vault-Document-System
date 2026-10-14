@@ -292,3 +292,87 @@ class TestLexicalSearch:
         assert await ChunkRepository(db).search_lexical(
             "   ", document_ids=[uuid.uuid4()], limit=5
         ) == []
+
+
+class TestEmbeddingModelScoping:
+    """Vectors from a different model must not be compared against.
+
+    Nothing about a stored vector reveals which model produced it, so without
+    an explicit filter a model change turns every score into confident
+    nonsense rather than an error.
+    """
+
+    async def test_search_ignores_vectors_from_another_model(
+        self, db: AsyncSession, user_id: str
+    ) -> None:
+        documents = DocumentRepository(db)
+        document = documents.add(make_document(user_id))
+        await documents.flush()
+
+        current = await add_chunk(
+            db, document.id, 0, "current model", unit_vector(1.0, 0.0)
+        )
+        stale = await add_chunk(
+            db, document.id, 1, "older model", unit_vector(1.0, 0.0)
+        )
+        current.embedding_model = "text-embedding-3-small"
+        stale.embedding_model = "text-embedding-ada-002"
+        await db.flush()
+
+        results = await ChunkRepository(db).search(
+            unit_vector(1.0, 0.0),
+            document_ids=[document.id],
+            limit=5,
+            model="text-embedding-3-small",
+        )
+
+        assert [item.chunk.content for item in results] == ["current model"]
+
+    async def test_omitting_the_model_compares_every_vector(
+        self, db: AsyncSession, user_id: str
+    ) -> None:
+        """The filter is opt-in, so existing callers keep their behaviour."""
+        documents = DocumentRepository(db)
+        document = documents.add(make_document(user_id))
+        await documents.flush()
+
+        chunk = await add_chunk(db, document.id, 0, "any model", unit_vector(1.0))
+        chunk.embedding_model = "text-embedding-ada-002"
+        await db.flush()
+
+        results = await ChunkRepository(db).search(
+            unit_vector(1.0), document_ids=[document.id], limit=5
+        )
+
+        assert len(results) == 1
+
+    async def test_stale_vectors_are_counted(
+        self, db: AsyncSession, user_id: str
+    ) -> None:
+        documents = DocumentRepository(db)
+        document = documents.add(make_document(user_id))
+        await documents.flush()
+
+        fresh = await add_chunk(db, document.id, 0, "fresh", unit_vector(1.0))
+        stale = await add_chunk(db, document.id, 1, "stale", unit_vector(0.0, 1.0))
+        fresh.embedding_model = "text-embedding-3-small"
+        stale.embedding_model = "text-embedding-ada-002"
+        await db.flush()
+
+        counted = await ChunkRepository(db).count_stale("text-embedding-3-small")
+
+        assert counted == 1
+
+    async def test_a_null_model_counts_as_stale(
+        self, db: AsyncSession, user_id: str
+    ) -> None:
+        """Rows predating the column cannot be trusted either."""
+        documents = DocumentRepository(db)
+        document = documents.add(make_document(user_id))
+        await documents.flush()
+
+        await add_chunk(db, document.id, 0, "unlabelled", unit_vector(1.0))
+
+        counted = await ChunkRepository(db).count_stale("text-embedding-3-small")
+
+        assert counted == 1

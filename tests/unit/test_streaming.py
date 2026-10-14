@@ -25,7 +25,14 @@ from app.models.chat import ChatSession
 from app.models.chunk import DocumentChunk
 from app.models.document import Document
 from app.repositories.chunk import ScoredChunk
-from app.services.chat_service import ChatService, StreamEventType
+from app.ai.prompts import AGGREGATE_CAVEAT
+from app.core.constants import MessageRole
+from app.models.chat import ChatMessage
+from app.services.chat_service import (
+    AnswerSource,
+    ChatService,
+    StreamEventType,
+)
 
 DOCUMENT_ID = uuid.uuid4()
 SESSION_ID = uuid.uuid4()
@@ -36,12 +43,15 @@ class StreamingLLM(LLMProvider):
 
     def __init__(self, answer: str = "The limit is 500 USD [1].") -> None:
         self._answer = answer
+        self.completions: list[Sequence[ProviderMessage]] = []
+        self.streamed: list[Sequence[ProviderMessage]] = []
 
     @property
     def model(self) -> str:
         return "test-model"
 
     def complete(self, messages, *, max_tokens=None, temperature=None):
+        self.completions.append(messages)
         return CompletionResult(
             content="standalone question", usage=TokenUsage(), model=self.model
         )
@@ -59,6 +69,7 @@ class StreamingLLM(LLMProvider):
         temperature: float | None = None,
         accumulator: StreamAccumulator | None = None,
     ) -> AsyncIterator[str]:
+        self.streamed.append(messages)
         if accumulator is not None:
             accumulator.model = self.model
         for word in self._answer.split(" "):
@@ -85,6 +96,10 @@ def make_session() -> ChatSession:
     session.documents = [document]
     session.message_count = 0
     return session
+
+
+def make_message(role: MessageRole, content: str) -> ChatMessage:
+    return ChatMessage(session_id=SESSION_ID, role=role, content=content)
 
 
 def scored(similarity: float = 0.7) -> ScoredChunk:
@@ -262,3 +277,96 @@ class TestRetrieverCaching:
         embedder.embed_documents.assert_called_once()
         cache.set.assert_awaited_once()
         assert outcome.usage.prompt_tokens == 9
+
+
+class TestQuestionKindRouting:
+    """Streaming must route questions the same way the blocking path does.
+
+    These diverged once: ask() classified and ask_stream() did not, so the
+    conversation and counting behaviour existed only on the endpoint the web
+    UI does not use.
+    """
+
+    async def test_a_conversation_question_is_answered_from_the_transcript(
+        self, service: ChatService, principal: Principal
+    ) -> None:
+        service._messages.recent_turns = AsyncMock(
+            return_value=[
+                make_message(MessageRole.USER, "What is the excess?"),
+                make_message(MessageRole.ASSISTANT, "It is 10 percent [1]."),
+            ]
+        )
+        service._retriever.retrieve = AsyncMock()
+
+        events = await collect(service, principal, "what did I just ask you?")
+
+        service._retriever.retrieve.assert_not_awaited()
+        done = events[-1]
+        assert done.type is StreamEventType.DONE
+        assert done.data["source"] == AnswerSource.CONVERSATION.value
+
+    async def test_the_transcript_answer_reaches_the_client(
+        self, service: ChatService, principal: Principal
+    ) -> None:
+        service._messages.recent_turns = AsyncMock(
+            return_value=[make_message(MessageRole.USER, "What is the excess?")]
+        )
+        service._retriever.retrieve = AsyncMock()
+
+        events = await collect(service, principal, "what did I ask?")
+
+        tokens = [e.data["text"] for e in events if e.type is StreamEventType.TOKEN]
+        assert "".join(tokens) == "standalone question"
+
+    async def test_a_counting_question_retrieves_a_wider_window(
+        self, service: ChatService, principal: Principal
+    ) -> None:
+        service._retriever.retrieve = AsyncMock(
+            return_value=RetrievalOutcome([scored()], 0.7, 0.25)
+        )
+
+        await collect(service, principal, "how many exclusions are there?")
+
+        settings = get_settings()
+        assert (
+            service._retriever.retrieve.await_args.kwargs["top_k"]
+            == settings.rag.aggregate_top_k
+        )
+
+    async def test_a_counting_question_is_told_the_excerpts_are_a_sample(
+        self, service: ChatService, principal: Principal
+    ) -> None:
+        """Without this a total counted from six chunks reads as the real one."""
+        service._retriever.retrieve = AsyncMock(
+            return_value=RetrievalOutcome([scored()], 0.7, 0.25)
+        )
+
+        await collect(service, principal, "list all the exclusions")
+
+        prompts = [
+            message.content
+            for messages in service._llm.streamed
+            for message in messages
+        ]
+        assert any(AGGREGATE_CAVEAT in prompt for prompt in prompts)
+
+    async def test_an_ordinary_question_uses_the_normal_window_and_no_caveat(
+        self, service: ChatService, principal: Principal
+    ) -> None:
+        service._retriever.retrieve = AsyncMock(
+            return_value=RetrievalOutcome([scored()], 0.7, 0.25)
+        )
+
+        await collect(service, principal, "What is the limit?")
+
+        settings = get_settings()
+        assert (
+            service._retriever.retrieve.await_args.kwargs["top_k"]
+            == settings.rag.top_k
+        )
+        prompts = [
+            message.content
+            for messages in service._llm.streamed
+            for message in messages
+        ]
+        assert not any(AGGREGATE_CAVEAT in prompt for prompt in prompts)

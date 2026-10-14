@@ -34,6 +34,8 @@ from app.ai.prompts import (
 )
 from app.ai.question import QuestionClassifier, QuestionKind
 from app.ai.rag import Citation, CitationMapper, ChunkRetriever, ContextBuilder
+from app.ai.rag.retriever import RetrievalOutcome
+from app.ai.rag.rerank import build_reranker
 from app.ai.schemas import FOLLOW_UP_SCHEMA
 from app.core.config import Settings
 from app.core.constants import AIOperation, MessageRole
@@ -44,7 +46,7 @@ from app.models.chat import ChatMessage, ChatSession
 from app.models.document import Document
 from app.repositories.chat import ChatMessageRepository, ChatSessionRepository
 from app.repositories.chunk import ChunkRepository
-from app.repositories.metrics import ApiUsageRepository
+from app.repositories.metrics import ApiUsageRepository, RetrievalMetricRepository
 from app.services.document_service import DocumentService
 
 logger = get_logger(__name__)
@@ -142,8 +144,13 @@ class ChatService:
         self._sessions = ChatSessionRepository(session)
         self._messages = ChatMessageRepository(session)
         self._usage = ApiUsageRepository(session)
+        self._retrieval_metrics = RetrievalMetricRepository(session)
         self._retriever = ChunkRetriever(
-            ChunkRepository(session), embedder, settings.rag, cache=cache
+            ChunkRepository(session),
+            embedder,
+            settings.rag,
+            cache=cache,
+            reranker=build_reranker(settings.rag, llm),
         )
         self._context_builder = ContextBuilder(max_chars=settings.rag.max_context_chars)
         self._classifier = QuestionClassifier()
@@ -250,7 +257,15 @@ class ChatService:
 
         if not outcome.is_relevant:
             self._record_retrieval_usage(outcome, session_id)
-            return await self._refuse(session, question, started)
+            refusal = await self._refuse(session, question, started)
+            self._record_retrieval_split(
+                outcome,
+                kind=kind,
+                session_id=session_id,
+                message_id=refusal.message.id,
+                started=started,
+            )
+            return refusal
 
         names = {document.id: document.filename for document in session.documents}
         context = self._context_builder.build(
@@ -304,6 +319,13 @@ class ChatService:
             latency_ms=message.latency_ms,
         )
         await self._finalise(session, question, answer, increment=2)
+        self._record_retrieval_split(
+            outcome,
+            kind=kind,
+            session_id=session_id,
+            message_id=message.id,
+            started=started,
+        )
 
         logger.info(
             "Question answered",
@@ -384,6 +406,28 @@ class ChatService:
             grounded=False,
             usage=completion.usage,
             source=AnswerSource.CONVERSATION,
+        )
+
+    def _record_retrieval_split(
+        self,
+        outcome: RetrievalOutcome,
+        *,
+        kind: QuestionKind,
+        session_id: uuid.UUID,
+        message_id: uuid.UUID | None,
+        started: float,
+    ) -> None:
+        """Store which arm this search actually leaned on.
+
+        Called after the turn is flushed so the row can reference the message
+        it belongs to; the id is assigned on flush, not on construction.
+        """
+        self._retrieval_metrics.record(
+            outcome,
+            question_kind=kind.value,
+            session_id=session_id,
+            message_id=message_id,
+            latency_ms=int((time.perf_counter() - started) * 1000),
         )
 
     def _record_retrieval_usage(self, outcome, session_id: uuid.UUID) -> None:
@@ -537,14 +581,35 @@ class ChatService:
             )
         )
 
+        kind = self._classifier.classify(question, has_history=bool(history))
+        if kind is QuestionKind.CONVERSATION:
+            # Emitted whole rather than token by token, as refusals are: the
+            # answer is short and already persisted by the shared path, and
+            # duplicating that persistence to stream it would be a poor trade.
+            result = await self._answer_from_history(
+                session, question, history, started
+            )
+            yield StreamEvent.token(result.message.content)
+            yield StreamEvent.done(result)
+            return
+
         search_query = await self._condense(question, history)
         outcome = await self._retriever.retrieve(
-            search_query, document_ids=session.document_ids
+            search_query,
+            document_ids=session.document_ids,
+            top_k=self._top_k_for(kind),
         )
 
         if not outcome.is_relevant:
             self._record_retrieval_usage(outcome, session_id)
             refusal = await self._refuse(session, question, started)
+            self._record_retrieval_split(
+                outcome,
+                kind=kind,
+                session_id=session_id,
+                message_id=refusal.message.id,
+                started=started,
+            )
             yield StreamEvent.token(refusal.message.content)
             yield StreamEvent.done(refusal)
             return
@@ -557,7 +622,10 @@ class ChatService:
 
         async for delta in self._llm.stream(
             build_answer_messages(
-                question, context_block=context.block, history=history
+                question,
+                context_block=context.block,
+                history=history,
+                caveat=AGGREGATE_CAVEAT if kind is QuestionKind.AGGREGATE else "",
             ),
             accumulator=accumulator,
         ):
@@ -594,6 +662,13 @@ class ChatService:
             latency_ms=message.latency_ms,
         )
         await self._finalise(session, question, answer, increment=2)
+        self._record_retrieval_split(
+            outcome,
+            kind=kind,
+            session_id=session_id,
+            message_id=message.id,
+            started=started,
+        )
 
         result = AnswerResult(
             message=message, citations=cited, grounded=grounded, usage=usage

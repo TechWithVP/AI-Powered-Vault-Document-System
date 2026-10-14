@@ -8,9 +8,12 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from app.core.config import get_settings
+from app.repositories.chunk import ChunkRepository
 from app.services.health import (
     ComponentHealth,
     ComponentStatus,
+    EmbeddingConsistencyProbe,
     HealthProbe,
     HealthReport,
     HealthService,
@@ -111,3 +114,37 @@ class TestHealthService:
     async def test_all_passing_probes_are_healthy(self) -> None:
         service = HealthService(settings=None, probes=[_PassingProbe()])
         assert (await service.check()).healthy is True
+
+
+class TestEmbeddingConsistencyProbe:
+    """A model change must be visible without taking the service down."""
+
+    async def test_stale_vectors_report_degraded_not_down(self) -> None:
+        probe = EmbeddingConsistencyProbe(get_settings())
+        with patch.object(
+            ChunkRepository, "count_stale", AsyncMock(return_value=7)
+        ):
+            report = await probe.execute()
+
+        assert report.status is ComponentStatus.DEGRADED
+        assert "7 chunk(s)" in (report.detail or "")
+
+    async def test_a_consistent_corpus_reports_up(self) -> None:
+        probe = EmbeddingConsistencyProbe(get_settings())
+        with patch.object(
+            ChunkRepository, "count_stale", AsyncMock(return_value=0)
+        ):
+            report = await probe.execute()
+
+        assert report.status is ComponentStatus.UP
+
+    async def test_degraded_embeddings_do_not_fail_overall_health(self) -> None:
+        """The system still answers; it just answers from less of the corpus."""
+        probe = EmbeddingConsistencyProbe(get_settings())
+        with patch.object(
+            ChunkRepository, "count_stale", AsyncMock(return_value=3)
+        ):
+            report = await HealthService(get_settings(), probes=[probe]).check()
+
+        assert report.healthy is True
+        assert report.components[0].status is ComponentStatus.DEGRADED

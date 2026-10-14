@@ -64,27 +64,78 @@ These are a fair sample of why execution matters more than review:
 
 Every retrieval constant here - chunk size, overlap, the similarity and lexical
 thresholds, fusion weights - started as a number that looked reasonable while
-hand-checking a few questions. That is not tuning, and it hid three real
-defects that only appeared once a labelled set existed:
+hand-checking a few questions. That is not tuning. It hid real defects and
+left a conventional improvement unexamined, and none of that surfaced until a
+labelled set existed:
 
-1. **Fusion could not promote an exact-term hit.** With both arms truncated to
+1. **Reranking, the conventional next lever, is a judgement call rather than
+   a win.** Over five runs it reliably lifted recall@3 from 64 to 82 percent
+   and usually MRR from 0.60 to 0.64, left recall@6 unchanged, and dropped
+   recall@1 from 45 to 36 in two runs of five. The gain is two cases out of
+   eleven and varies between runs; the cost - $0.001 and 2.2 to 2.6 seconds on
+   a 4.5 second answer - does not. It ships switchable rather than enabled.
+
+   The first measurement was worse than that and I nearly wrote it up as a
+   clear negative result, which would have been a single unlucky sample
+   reported as a finding. Re-running it was the difference. Measuring it also
+   exposed that structured output guarantees a response's shape, not that the
+   model filled it in: asked to score 40 passages it returned 5, and the first
+   implementation placed the other 35 by an opinion it never gave.
+
+2. **Fusion could not promote an exact-term hit.** With both arms truncated to
    `top_k` and the lexical arm weighted at 0.8, a chunk only full-text search
    found scored below the weakest semantic hit and never reached the model. The
    two candidate lists were entirely disjoint at that depth, so reciprocal rank
    fusion had nothing to fuse and degenerated into concatenation. Fixed by
    fetching a deeper candidate pool and weighting the arms equally; hybrid
    recall@6 went from 82 percent - identical to semantic alone - to 91.
-2. **Concurrent queries on one session.** The two searches ran under
+3. **Concurrent queries on one session.** The two searches ran under
    `asyncio.gather` on the request's shared `AsyncSession`, which SQLAlchemy
    does not permit. It never surfaced in production only because earlier
    queries in the request had already provisioned the connection. They now run
    sequentially; two index lookups are noise against an LLM call.
-3. **Lexical-only citations reported `similarity: 0.0`**, advertising a correct
+4. **The two chat endpoints disagreed.** `ask()` classified questions and
+   routed them; `ask_stream()` did not. The web UI only uses the streaming
+   one, so conversation questions were refused and counting questions missed
+   their wider window and their caveat - in the product, while passing in the
+   tests, because the tests exercised the endpoint the UI does not use.
+   Fixing it exposed a second gap underneath: the classifier matched "what did
+   I ask?" but not "what did I just ask you?", because the patterns had no
+   room for the adverb English puts between an auxiliary and its verb.
+
+5. **Lexical-only citations reported `similarity: 0.0`**, advertising a correct
    citation as irrelevant. Citations now carry both scores.
 
 The harness in `eval/` reports each arm separately rather than one blended
-number, because the first defect was invisible in the aggregate: hybrid and
-semantic scored identically while the lexical arm contributed nothing at all.
+number, because the fusion defect was invisible in the aggregate: hybrid
+and semantic scored identically while the lexical arm contributed nothing at
+all. It reports rank alongside recall for the same reason - recall@6 cannot
+see a reranker that only reorders the window.
+
+### Retrieval records which arm answered
+
+The eval harness answers "is the lexical arm worth it on this labelled set".
+It cannot answer "is it worth it on what users are actually asking", and that
+is the question that decides whether a second index earns its place. Fusion is
+the only point where both signals share a scale, so each arm's contribution is
+captured there and written per search to `retrieval_metrics`, with the counts
+of chunks each arm found alone and found together.
+
+The first few real searches already separate cleanly: a paraphrase question
+scored 100 percent semantic, a question naming an exact term came back 53/47,
+and across all of them no chunk was found by the lexical arm alone. That last
+figure is the one to watch - it is the difference between a hybrid and a vector
+search with a confirmation step.
+
+### Embeddings carry their provenance
+
+Nothing about a stored vector reveals which model produced it. Changing the
+embedding model therefore has no symptom: cosine distance keeps returning
+confident scores against vectors from an unrelated space. Each chunk records
+`embedding_model`, retrieval searches only vectors it can interpret,
+re-processing treats a mismatched vector as work to redo, and `/health` reports
+the count as `degraded` rather than `down` - the service still answers, just
+from less of the corpus than it should.
 
 ## Part 2: AI inside the system
 

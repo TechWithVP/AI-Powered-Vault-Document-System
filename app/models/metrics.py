@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from decimal import Decimal
 
-from sqlalchemy import ForeignKey, Index, Integer, Numeric, String, Text
+from sqlalchemy import Boolean, Float, ForeignKey, Index, Integer, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -78,4 +78,58 @@ class ApiUsage(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     cost_usd: Mapped[Decimal] = mapped_column(
         Numeric(12, 6), nullable=False, default=Decimal("0")
     )
+    latency_ms: Mapped[int | None] = mapped_column(Integer)
+
+
+class RetrievalMetric(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """One row per search, recording which arm the answer came from.
+
+    Hybrid retrieval is two systems whose relative value is an empirical
+    question, not a settled one, and it changes with the corpus. Fusion is the
+    only point where both signals exist on a comparable scale, so the share is
+    computed there and stored here; without it the only way to know whether
+    the lexical arm is still earning its place is to re-run the eval harness
+    by hand against a snapshot of the corpus.
+    """
+
+    __tablename__ = "retrieval_metrics"
+    __table_args__ = (
+        Index("ix_retrieval_created", "created_at"),
+        Index("ix_retrieval_session", "session_id"),
+    )
+
+    session_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("chat_sessions.id", ondelete="CASCADE")
+    )
+    message_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("chat_messages.id", ondelete="CASCADE")
+    )
+    #: DOCUMENT, CONVERSATION or AGGREGATE - counting questions retrieve wider,
+    #: so their shares are not comparable with ordinary ones.
+    question_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+
+    #: Summed RRF contribution of each arm across the returned chunks.
+    semantic_contribution: Mapped[float] = mapped_column(
+        Float, nullable=False, default=0.0
+    )
+    lexical_contribution: Mapped[float] = mapped_column(
+        Float, nullable=False, default=0.0
+    )
+    #: Derived, but stored: recomputing a ratio over millions of rows at read
+    #: time is the kind of thing that quietly makes a dashboard unusable.
+    semantic_share: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    lexical_share: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+
+    #: How many returned chunks each arm found, and how many both agreed on.
+    results_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    semantic_only: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    lexical_only: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    found_by_both: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    best_similarity: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    best_lexical_rank: Mapped[float] = mapped_column(
+        Float, nullable=False, default=0.0
+    )
+    is_relevant: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    reranked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     latency_ms: Mapped[int | None] = mapped_column(Integer)

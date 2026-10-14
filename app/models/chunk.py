@@ -10,6 +10,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    String,
     Text,
     UniqueConstraint,
 )
@@ -37,6 +38,8 @@ class DocumentChunk(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __table_args__ = (
         UniqueConstraint("document_id", "chunk_index", name="uq_chunk_document_index"),
         Index("ix_chunks_document", "document_id"),
+        # Retrieval filters on the model, so it belongs in the scoping index.
+        Index("ix_chunks_document_model", "document_id", "embedding_model"),
     )
 
     document_id: Mapped[uuid.UUID] = mapped_column(
@@ -51,6 +54,12 @@ class DocumentChunk(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     embedding: Mapped[list[float] | None] = mapped_column(
         Vector(EMBEDDING_DIMENSIONS)
     )
+    #: Which model produced the vector. Embeddings from different models are
+    #: not comparable, but nothing about a stored vector reveals that: swap the
+    #: model and cosine distance keeps returning confident, meaningless scores.
+    #: Recording it lets retrieval skip vectors it cannot interpret, and lets
+    #: a re-embed find the rows that need redoing.
+    embedding_model: Mapped[str | None] = mapped_column(String(64))
 
     #: Lexical index maintained by PostgreSQL. Dense embeddings generalise well
     #: but dilute rare, specific terms inside heterogeneous text such as tables;
@@ -66,6 +75,10 @@ class DocumentChunk(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     @property
     def is_embedded(self) -> bool:
         return self.embedding is not None
+
+    def is_usable_with(self, model: str) -> bool:
+        """Whether this vector can be compared against `model`'s output."""
+        return self.embedding is not None and self.embedding_model == model
 
     def preview(self, limit: int = 240) -> str:
         """Short snippet used when rendering a citation."""

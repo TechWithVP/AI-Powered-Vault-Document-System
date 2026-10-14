@@ -6,6 +6,13 @@ from app.ai.rag.context import (
     ContextBuilder,
     RetrievedContext,
 )
+from app.ai.rag.rerank import (
+    LLMReranker,
+    NullReranker,
+    RerankOutcome,
+    Reranker,
+    build_reranker,
+)
 from app.ai.rag.retriever import ChunkRetriever, RetrievalOutcome
 
 __all__ = [
@@ -13,6 +20,11 @@ __all__ = [
     "Citation",
     "CitationMapper",
     "ContextBuilder",
+    "LLMReranker",
+    "NullReranker",
+    "RerankOutcome",
+    "Reranker",
     "RetrievalOutcome",
     "RetrievedContext",
+    "build_reranker",
 ]
