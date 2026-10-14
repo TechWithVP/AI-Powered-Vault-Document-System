@@ -1,0 +1,33 @@
+# ---- Web framework ----------------------------------------------------------
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+
+# ---- Configuration & validation ---------------------------------------------
+pydantic==2.10.4
+pydantic-settings==2.7.1
+
+# ---- Database ---------------------------------------------------------------
+SQLAlchemy[asyncio]==2.0.36
+alembic==1.14.0
+psycopg[binary,pool]==3.2.3
+pgvector==0.3.6
+
+# ---- Async task queue & cache -----------------------------------------------
+celery[redis]==5.4.0
+redis==5.2.1
+
+# ---- Object storage (S3 / MinIO) --------------------------------------------
+boto3==1.35.92
+
+# ---- AI ---------------------------------------------------------------------
+openai==1.59.6
+tiktoken==0.8.0
+
+# ---- Document processing ----------------------------------------------------
+langchain-text-splitters==0.3.4
+pdfplumber==0.11.4
+python-docx==1.1.2
+
+# ---- Resilience -------------------------------------------------------------
+tenacity==9.0.0

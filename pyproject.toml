@@ -1,0 +1,36 @@
+[project]
+name = "vault-document-system"
+version = "1.0.0"
+description = "AI-powered document vault with RAG-based document chat"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-ra --strict-markers --strict-config"
+markers = [
+    "unit: isolated tests with no external dependencies",
+    "integration: tests requiring Postgres, Redis or object storage",
+]
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["app/workers/celery_app.py", "*/__init__.py"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "RUF"]
+ignore = ["B008"]  # FastAPI dependencies are function calls in defaults by design
+
+[tool.ruff.lint.per-file-ignores]
+"alembic/versions/*" = ["E501"]
+"tests/*" = ["S101"]

@@ -1,0 +1,17 @@
+ACME Corporation Remote Work Policy
+Effective Date: 1 March 2024
+
+1. Eligibility
+All full-time employees who have completed 90 days of continuous service are eligible to work remotely for up to three days per week. Contractors and part-time staff require written approval from their department head.
+
+2. Equipment and Expenses
+ACME provides each remote employee with a laptop, monitor and headset. Employees may claim up to 500 USD per calendar year for home office furniture. Internet costs are reimbursed at 40 USD per month.
+
+3. Working Hours
+Remote employees must be available during core hours of 10:00 to 16:00 in their local timezone. Any change to working hours requires two weeks of advance notice to the reporting manager.
+
+4. Security Requirements
+All devices must use full-disk encryption and connect through the company VPN when accessing internal systems. Storing customer data on personal devices is strictly prohibited and may result in termination.
+
+5. Termination of Arrangement
+Either party may end the remote work arrangement with 30 days notice. Performance concerns may lead to immediate revocation of remote privileges at the discretion of the department head.

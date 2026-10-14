@@ -1,0 +1,249 @@
+/* Vault document system - minimal chat interface */
+
+:root {
+  --bg: #0f1115;
+  --surface: #171a21;
+  --surface-2: #1e222b;
+  --border: #2a2f3a;
+  --text: #e6e8ec;
+  --text-dim: #9aa3b2;
+  --accent: #5b8def;
+  --accent-dim: #3a6fd8;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --err: #f85149;
+  --radius: 10px;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font: 15px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+header {
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--surface);
+  flex-wrap: wrap;
+}
+
+header h1 { font-size: 16px; margin: 0; font-weight: 600; white-space: nowrap; }
+header .spacer { flex: 1; }
+
+.badge {
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+.badge.ok { color: var(--ok); border-color: var(--ok); }
+.badge.err { color: var(--err); border-color: var(--err); }
+
+main { flex: 1; display: grid; grid-template-columns: 300px minmax(0, 1fr); min-height: 0; }
+
+aside {
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+  overflow-y: auto;
+  padding: 18px 16px 24px;
+  min-width: 0;
+}
+
+aside h2 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-dim);
+  margin: 0 0 10px;
+  font-weight: 600;
+}
+
+aside h2:not(:first-of-type) { margin-top: 22px; }
+
+/* A <label> is inline by default, which fragments its border across line
+   boxes; flex makes it a real, centred drop target. */
+.uploader {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  width: 100%;
+  border: 1.5px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 22px 14px;
+  text-align: center;
+  color: var(--text-dim);
+  cursor: pointer;
+  background: var(--surface-2);
+  transition: border-color .15s, color .15s, background .15s;
+}
+.uploader:hover, .uploader.drag {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: rgba(91, 141, 239, .07);
+}
+.uploader input { display: none; }
+
+.uploader-icon {
+  width: 26px;
+  height: 26px;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  fill: none;
+  opacity: .85;
+}
+.uploader-title { font-size: 13px; font-weight: 500; line-height: 1.35; }
+.uploader-hint { font-size: 11px; opacity: .75; }
+
+.doc {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  background: var(--surface-2);
+  cursor: pointer;
+  transition: border-color .15s;
+}
+.doc:hover { border-color: var(--accent-dim); }
+.doc.selected { border-color: var(--accent); }
+.doc-name {
+  font-size: 13px;
+  font-weight: 500;
+  word-break: break-all;
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+.doc-meta { font-size: 11px; color: var(--text-dim); margin-top: 3px; }
+
+.status { font-size: 11px; padding: 1px 7px; border-radius: 999px; white-space: nowrap; }
+.status.ready { background: rgba(63,185,80,.15); color: var(--ok); }
+.status.queued, .status.processing { background: rgba(210,153,34,.15); color: var(--warn); }
+.status.failed { background: rgba(248,81,73,.15); color: var(--err); }
+
+section.chat { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+
+#messages { flex: 1; overflow-y: auto; padding: 28px 24px; }
+
+.msg { max-width: 760px; margin: 0 auto 20px; }
+.msg .who {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  margin-bottom: 5px;
+}
+.msg .body { white-space: pre-wrap; }
+.msg.user .body {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+}
+
+.cite-ref {
+  color: var(--accent);
+  font-size: 12px;
+  vertical-align: super;
+  cursor: pointer;
+}
+
+.citations { margin-top: 12px; border-left: 2px solid var(--border); padding-left: 12px; }
+.citation { font-size: 12.5px; color: var(--text-dim); margin-bottom: 8px; }
+.citation .src { color: var(--accent); font-family: var(--mono); font-size: 12px; }
+.citation .quote { display: block; margin-top: 2px; font-style: italic; }
+
+.suggestions { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 8px; }
+.chip {
+  font-size: 12.5px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-dim);
+  padding: 5px 11px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.chip:hover { border-color: var(--accent); color: var(--accent); }
+
+.ungrounded {
+  border-left: 2px solid var(--warn);
+  padding-left: 12px;
+  color: var(--text-dim);
+}
+
+footer { border-top: 1px solid var(--border); padding: 14px 24px; background: var(--surface); }
+.composer { max-width: 760px; margin: 0 auto; display: flex; gap: 10px; }
+
+textarea, input[type="text"] {
+  flex: 1;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 10px 12px;
+  font: inherit;
+  resize: none;
+}
+textarea:focus, input:focus { outline: none; border-color: var(--accent); }
+
+button {
+  background: var(--accent);
+  color: #fff;
+  border: 0;
+  border-radius: var(--radius);
+  padding: 10px 18px;
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+}
+button:disabled { opacity: .45; cursor: not-allowed; }
+
+/* The empty state is centred in the pane; once messages exist it is removed,
+   so the normal top-aligned flow is unaffected. */
+#messages:has(.empty) { display: flex; align-items: center; justify-content: center; }
+.empty { color: var(--text-dim); text-align: center; font-size: 14px; line-height: 1.8; }
+.spinner {
+  display: inline-block;
+  width: 13px; height: 13px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin .7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.toast {
+  position: fixed; bottom: 22px; right: 22px;
+  background: var(--surface-2);
+  border: 1px solid var(--err);
+  color: var(--text);
+  padding: 11px 15px;
+  border-radius: var(--radius);
+  font-size: 13.5px;
+  max-width: 400px;
+}
+
+.key-row { display: flex; gap: 8px; }
+.key-row input { font-family: var(--mono); font-size: 12.5px; }
+
+@media (max-width: 860px) {
+  main { grid-template-columns: 1fr; }
+  aside { display: none; }
+}
